@@ -382,7 +382,7 @@ namespace
 		if ((base && g_lists.npcs.contains(base)) || (orig && g_lists.npcs.contains(orig))) return "NPC list";
 
 		if (!g_lists.locRefTypes.empty()) {
-			if (auto* loc = a_player->GetPlayerRuntimeData().currentLocation) {
+			if (auto* loc = a_player->GetCurrentLocation()) {
 				for (auto& ref : loc->specialRefs)
 					if (ref.type && g_lists.locRefTypes.contains(ref.type) && ref.refData.refID == a_actor->GetFormID()) return "location boss";
 			}
