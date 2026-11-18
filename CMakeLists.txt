@@ -26,6 +26,7 @@ function(bono_plugin NAME SRC)
 		VERSION ${PROJECT_VERSION}
 		SOURCES ${SRC})
 	target_include_directories(${NAME} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/common")
+	target_precompile_headers(${NAME} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/common/PCH.h")
 	if(MSVC)
 		target_compile_options(${NAME} PRIVATE /utf-8 /permissive- /Zc:__cplusplus /MP /W3)
 	endif()
