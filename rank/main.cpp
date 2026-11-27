@@ -276,7 +276,7 @@ namespace
 		auto* am = RE::BSAudioManager::GetSingleton();
 		if (!form || !form->soundDescriptor || !am) return;
 		RE::BSSoundHandle h;
-		if (!am->BuildSoundDataFromDescriptor(h, form->soundDescriptor)) {
+		if (!am->GetSoundHandle(h, form->soundDescriptor)) {
 			bono::Logf("sound: build FAILED for rank {}", kRankName[a_rank]);
 			return;
 		}
