@@ -2,9 +2,16 @@
   "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg/master/scripts/vcpkg.schema.json",
   "name": "bono-dmc-ae-port",
   "version-string": "1.0.0",
-  "builtin-baseline": "fc3f61366102c1f0d4547c06d03c523bb18c13a7",
   "dependencies": [
+    "boost-atomic",
+    "boost-stl-interfaces",
+    "rsm-binary-io",
+    "span-lite",
+    "xbyak",
+    "tsl-ordered-map",
+    "fmt",
     "spdlog",
-    "rapidcsv"
+    "rapidcsv",
+    "directxtk"
   ]
 }
