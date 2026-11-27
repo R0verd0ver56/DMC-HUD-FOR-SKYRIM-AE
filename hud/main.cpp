@@ -223,6 +223,25 @@ namespace
 		return avo->GetPermanentActorValue(a_av) + a_actor->GetActorValueModifier(RE::ACTOR_VALUE_MODIFIER::kTemporary, a_av);
 	}
 
+	// DIAGNOSTIC: every 2 s write what the game reports for health / magicka / stamina to BonoDMCHUD.log
+	// (needs LogEnabled=1). Shows where the extra bonus on top of the "max" sits.
+	void LogAVParts(RE::PlayerCharacter* a_player, float a_dt)
+	{
+		static float t = 99.0f;
+		t += a_dt;
+		if (t < 2.0f) return;
+		t = 0;
+		auto* avo = a_player->AsActorValueOwner();
+		for (auto av : { RE::ActorValue::kHealth, RE::ActorValue::kMagicka, RE::ActorValue::kStamina }) {
+			bono::Logf("AV {}: current {:.1f} | base {:.1f} | permanent-total {:.1f} | modifiers: permanent {:.1f}, temporary {:.1f}, damage {:.1f} | our max {:.1f}",
+				static_cast<int>(av), avo->GetActorValue(av), avo->GetBaseActorValue(av), avo->GetPermanentActorValue(av),
+				a_player->GetActorValueModifier(RE::ACTOR_VALUE_MODIFIER::kPermanent, av),
+				a_player->GetActorValueModifier(RE::ACTOR_VALUE_MODIFIER::kTemporary, av),
+				a_player->GetActorValueModifier(RE::ACTOR_VALUE_MODIFIER::kDamage, av),
+				MaxAV(a_player, av));
+		}
+	}
+
 	float CurAV(RE::Actor* a_actor, RE::ActorValue a_av) { return a_actor->AsActorValueOwner()->GetActorValue(a_av); }
 
 	float Frac(float a_cur, float a_max) { return a_max > 0.0f ? std::clamp(a_cur / a_max, 0.0f, 1.0f) : 0.0f; }
@@ -560,6 +579,28 @@ namespace
 	void UpdateBosses(RE::GFxMovieView* v, RE::PlayerCharacter* p, float a_dt, bool a_paused)
 	{
 		const auto ppos = p->GetPosition();
+
+		// DIAGNOSTIC: every 2 s, what the game reports for each boss' health (needs LogEnabled=1)
+		{
+			static float bt = 99.0f;
+			bt += a_dt;
+			if (bt >= 2.0f && !g_s.bosses.empty()) {
+				bt = 0;
+				for (auto& b : g_s.bosses) {
+					auto  bsp = b.handle.get();
+					auto* ba = bsp.get();
+					if (!ba) continue;
+					auto* avo = ba->AsActorValueOwner();
+					const auto hv = RE::ActorValue::kHealth;
+					bono::Logf("BOSS AV {}: current {:.1f} | base {:.1f} | permanent-total {:.1f} | modifiers: permanent {:.1f}, temporary {:.1f}, damage {:.1f} | our max {:.1f} | bar fill {:.3f} trail {:.3f}",
+						b.name, avo->GetActorValue(hv), avo->GetBaseActorValue(hv), avo->GetPermanentActorValue(hv),
+						ba->GetActorValueModifier(RE::ACTOR_VALUE_MODIFIER::kPermanent, hv),
+						ba->GetActorValueModifier(RE::ACTOR_VALUE_MODIFIER::kTemporary, hv),
+						ba->GetActorValueModifier(RE::ACTOR_VALUE_MODIFIER::kDamage, hv),
+						MaxAV(ba, hv), b.fill, b.trail);
+				}
+			}
+		}
 		for (auto it = g_s.bosses.begin(); it != g_s.bosses.end();) {
 			auto  sp = it->handle.get();
 			auto* a = sp.get();
@@ -703,6 +744,7 @@ namespace
 				v->SetVariableDouble("_root.HUDMovieBaseInstance.Stamina._alpha", 0.0);
 			}
 
+			LogAVParts(p, a_dt);
 			UpdatePlayerBars(v, p, a_dt, paused);
 
 			// auto-hide fade
