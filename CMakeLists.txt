@@ -30,8 +30,8 @@ function(bono_plugin NAME SRC)
 	add_commonlibsse_plugin(${NAME}
 		AUTHOR "Bono (AE/SE port)"
 		VERSION ${PROJECT_VERSION}
-		USE_ADDRESS_LIBRARY
 		STRUCT_DEPENDENT
+		COMPATIBLE_RUNTIMES 1.6.1170 1.7.104
 		SOURCES ${SRC})
 	target_include_directories(${NAME} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/common")
 	target_precompile_headers(${NAME} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/common/PCH.h")
