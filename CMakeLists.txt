@@ -12,10 +12,16 @@ set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 # CommonLibSSE-NG is cloned into extern/ by the GitHub workflow (see .github/workflows/build.yml).
 if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/extern/CommonLibSSE-NG/CMakeLists.txt")
 	message(FATAL_ERROR "extern/CommonLibSSE-NG is missing. The GitHub workflow clones it; for a local build run:\n"
-		"  git clone https://github.com/CharmedBaryon/CommonLibSSE-NG.git extern/CommonLibSSE-NG\n"
-		"  git -C extern/CommonLibSSE-NG checkout b93280e")
+		"  git clone https://github.com/alandtse/CommonLibSSE-NG.git extern/CommonLibSSE-NG\n"
+		"  git -C extern/CommonLibSSE-NG checkout 8ffc2b74af015f837de53cc02b0cb470a15678e4")
 endif()
 
+# Same CommonLibSSE-NG that the working AMR 1.5.4.5 build uses (Address Library format 5, runs on 1.7.104).
+set(ENABLE_SKYRIM_SE ON CACHE BOOL "" FORCE)
+set(ENABLE_SKYRIM_AE ON CACHE BOOL "" FORCE)
+set(ENABLE_SKYRIM_VR OFF CACHE BOOL "" FORCE)
+set(COMMONLIB_ENABLE_IPO OFF CACHE BOOL "" FORCE)
+set(COMMONLIB_PREBUILT OFF CACHE BOOL "" FORCE)
 set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
 add_subdirectory(extern/CommonLibSSE-NG EXCLUDE_FROM_ALL)
 include(extern/CommonLibSSE-NG/cmake/CommonLibSSE.cmake)
@@ -24,6 +30,8 @@ function(bono_plugin NAME SRC)
 	add_commonlibsse_plugin(${NAME}
 		AUTHOR "Bono (AE/SE port)"
 		VERSION ${PROJECT_VERSION}
+		USE_ADDRESS_LIBRARY
+		STRUCT_DEPENDENT
 		SOURCES ${SRC})
 	target_include_directories(${NAME} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/common")
 	target_precompile_headers(${NAME} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/common/PCH.h")
