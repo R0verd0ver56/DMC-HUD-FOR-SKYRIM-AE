@@ -219,8 +219,14 @@ namespace
 	// ------------------------------------------------------------------ helpers
 	float MaxAV(RE::Actor* a_actor, RE::ActorValue a_av)
 	{
-		auto* avo = a_actor->AsActorValueOwner();
-		return avo->GetPermanentActorValue(a_av) + a_actor->GetActorValueModifier(RE::ACTOR_VALUE_MODIFIER::kTemporary, a_av);
+		// base + permanent modifiers + temporary modifiers. GetPermanentActorValue() is a cached value that is
+		// briefly stale (e.g. 100 instead of 910) after loading / fast travel, which collapsed the bar to 2 cells.
+		// Damage lives in its own modifier, so it is not part of the max. The max can never be below the current value.
+		auto*       avo = a_actor->AsActorValueOwner();
+		const float computed = avo->GetBaseActorValue(a_av) +
+		                       a_actor->GetActorValueModifier(RE::ACTOR_VALUE_MODIFIER::kPermanent, a_av) +
+		                       a_actor->GetActorValueModifier(RE::ACTOR_VALUE_MODIFIER::kTemporary, a_av);
+		return (std::max)(computed, avo->GetActorValue(a_av));
 	}
 
 	// DIAGNOSTIC: every 2 s write what the game reports for health / magicka / stamina to BonoDMCHUD.log
