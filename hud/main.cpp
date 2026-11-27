@@ -485,6 +485,7 @@ namespace
 			perCell = hpMax / static_cast<float>(maxCells);
 		}
 		cells = std::max(cells, 1);
+		perCell = hpMax / static_cast<float>(cells);  // spread max health over whole cells, so full health fills the last cell too
 		const int rows = cells > 10 ? 2 : 1;
 
 		if (cells != g_s.shownCells) {
