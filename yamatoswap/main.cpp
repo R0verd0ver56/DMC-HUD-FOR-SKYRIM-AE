@@ -63,6 +63,7 @@ namespace
 		bool         reequip{ true };
 		int          pollMs{ 500 };
 		int          gapMs{ 250 };
+		int          weaponDelayMs{ 0 };  // early swap only: re-equip the scabbard at once, the weapon this many ms later (0 = together)
 		bool         redraw{ true };
 		int          redrawMs{ 450 };
 		std::vector<Entry> entries;
@@ -118,6 +119,7 @@ namespace
 		g_cfg.pollMs  = std::clamp(ini.GetInt("PollMs", 500), 0, 10000);
 		g_cfg.gapMs   = std::clamp(ini.GetInt("ReequipGap", 250), 0, 3000);
 		g_cfg.redraw  = ini.GetBool("Redraw", true);
+		g_cfg.weaponDelayMs = std::clamp(ini.GetInt("WeaponDelay", 0), 0, 8000);
 		g_cfg.redrawMs = std::clamp(ini.GetInt("RedrawGap", 450), 100, 3000);
 		bono::Log::Get().Init(kLogPath, ini.GetBool("LogEnabled", false), ini.GetInt("MaxLogLines", 2000));
 
@@ -266,7 +268,8 @@ namespace
 
 	// Phase 1: take the changed items off now; phase 2 puts them back ReequipGap ms later (not in the same frame,
 	// otherwise the engine keeps the old 3D).
-	void ReequipItems(RE::PlayerCharacter* a_pc)
+	// a_mode: 0 = all items, 1 = everything except weapons, 2 = weapons only
+	void ReequipItems(RE::PlayerCharacter* a_pc, int a_mode = 0)
 	{
 		auto* em = RE::ActorEquipManager::GetSingleton();
 		auto* dom = RE::BGSDefaultObjectManager::GetSingleton();
@@ -283,6 +286,8 @@ namespace
 				bono::Logf("item not found: {} {:X}", it.plugin, it.local);
 				continue;
 			}
+			if (a_mode == 1 && obj->Is(RE::FormType::Weapon)) continue;
+			if (a_mode == 2 && !obj->Is(RE::FormType::Weapon)) continue;
 			if (obj->Is(RE::FormType::Weapon)) {
 				const bool right = a_pc->GetEquippedObject(false) == form;
 				const bool left  = a_pc->GetEquippedObject(true) == form;
@@ -325,7 +330,25 @@ namespace
 		const bool changed = ApplyModels(sdt != 0);
 		bono::Logf("evaluate: SDT={} applied={} changed={}", sdt, g_applied, changed);
 		g_applied = sdt;
-		if (changed && g_cfg.reequip) ReequipItems(pc);
+		if (changed && g_cfg.reequip) {
+			if (sdt == 1 && g_force.load() && g_cfg.weaponDelayMs > 0) {
+				// early swap: scabbard now, weapon after WeaponDelay (taking the weapon off mid-transform freezes the player)
+				ReequipItems(pc, 1);
+				const int d = g_cfg.weaponDelayMs;
+				bono::Logf("weapon re-equip postponed by {} ms", d);
+				std::thread([d] {
+					std::this_thread::sleep_for(std::chrono::milliseconds(d));
+					if (auto* t = SKSE::GetTaskInterface()) t->AddTask([] {
+						if (auto* p = RE::PlayerCharacter::GetSingleton()) {
+							bono::Logf("[{} ms] weapon re-equip now", NowMs());
+							ReequipItems(p, 2);
+						}
+					});
+				}).detach();
+			} else {
+				ReequipItems(pc, 0);
+			}
+		}
 	}
 
 	void Schedule(int a_delayMs)
