@@ -67,9 +67,11 @@ namespace
 		int          redrawMs{ 450 };
 		std::vector<Entry> entries;
 		std::vector<Item>  items;
+		std::vector<Item>  startSpells;  // casting any of these = SDT is starting: swap early, before the armour (and its fire VFX) arrive
 	} g_cfg;
 
 	std::atomic<unsigned> g_gen{ 0 };
+	std::atomic<bool>     g_force{ false };  // SDT transform started but the armour is not on yet
 	int                   g_applied{ -1 };  // -1 unknown, 0 normal models, 1 SDT models (main thread only)
 	bool                  g_dataLoaded{ false };
 
@@ -145,6 +147,14 @@ namespace
 				continue;
 			}
 			g_cfg.items.push_back({ p[0], ParseId(p[1]) });
+		}
+		for (auto& line : ini.GetAll("StartSpell")) {
+			auto p = Split(line, '|');
+			if (p.size() != 2) {
+				bono::Logf("bad StartSpell line: {}", line);
+				continue;
+			}
+			g_cfg.startSpells.push_back({ p[0], ParseId(p[1]) });
 		}
 		bono::Logf("config loaded ({}): {} swaps, {} items, delay {} ms", have ? "ini" : "no ini", g_cfg.entries.size(), g_cfg.items.size(), g_cfg.delayMs);
 	}
@@ -292,12 +302,14 @@ namespace
 		return id != 0 && a_pc->GetWornArmor(id) != nullptr;
 	}
 
+	bool SDTState(RE::PlayerCharacter* a_pc) { return g_force.load() || IsSDTWorn(a_pc); }
+
 	// main thread
 	void Evaluate()
 	{
 		auto* pc = RE::PlayerCharacter::GetSingleton();
 		if (!pc || !pc->Is3DLoaded() || !g_dataLoaded) return;
-		const int sdt = IsSDTWorn(pc) ? 1 : 0;
+		const int sdt = SDTState(pc) ? 1 : 0;
 		const bool changed = ApplyModels(sdt != 0);
 		bono::Logf("evaluate: SDT={} applied={} changed={}", sdt, g_applied, changed);
 		g_applied = sdt;
@@ -332,7 +344,7 @@ namespace
 					t->AddTask([&mismatches] {
 						auto* pc = RE::PlayerCharacter::GetSingleton();
 						if (!pc || !pc->Is3DLoaded() || !g_dataLoaded || g_applied < 0) { mismatches = 0; return; }
-						const int sdt = IsSDTWorn(pc) ? 1 : 0;
+						const int sdt = SDTState(pc) ? 1 : 0;
 						if (sdt == g_applied) { mismatches = 0; return; }
 						if (++mismatches >= 2) {
 							mismatches = 0;
@@ -362,7 +374,46 @@ namespace
 			if (!dh) return RE::BSEventNotifyControl::kContinue;
 			if (a_event->baseObject == dh->LookupFormID(g_cfg.sdtLocal, g_cfg.sdtPlugin)) {
 				bono::Logf("SDT armour {} event", a_event->equipped ? "equip" : "unequip");
+				g_force = false;  // from here on the worn armour decides
 				Schedule(g_cfg.delayMs);
+			}
+			return RE::BSEventNotifyControl::kContinue;
+		}
+	};
+
+	class SpellSink : public RE::BSTEventSink<RE::TESSpellCastEvent>
+	{
+	public:
+		static SpellSink* Get()
+		{
+			static SpellSink s;
+			return &s;
+		}
+
+		RE::BSEventNotifyControl ProcessEvent(const RE::TESSpellCastEvent* a_event, RE::BSTEventSource<RE::TESSpellCastEvent>*) override
+		{
+			if (!g_cfg.enabled || !a_event || !a_event->object || !a_event->object->IsPlayerRef()) return RE::BSEventNotifyControl::kContinue;
+			auto* dh = RE::TESDataHandler::GetSingleton();
+			if (!dh) return RE::BSEventNotifyControl::kContinue;
+			for (auto& sp : g_cfg.startSpells) {
+				if (a_event->spell == dh->LookupFormID(sp.local, sp.plugin)) {
+					bono::Logf("SDT start spell {:X} cast: swapping early", sp.local);
+					g_force = true;
+					Schedule(50);
+					// safety: if the armour never comes, give up and go back
+					std::thread([] {
+						std::this_thread::sleep_for(std::chrono::milliseconds(6000));
+						if (auto* t = SKSE::GetTaskInterface()) t->AddTask([] {
+							auto* pc = RE::PlayerCharacter::GetSingleton();
+							if (g_force.load() && pc && !IsSDTWorn(pc)) {
+								bono::Logf("SDT armour never arrived, undoing early swap");
+								g_force = false;
+								Evaluate();
+							}
+						});
+					}).detach();
+					break;
+				}
 			}
 			return RE::BSEventNotifyControl::kContinue;
 		}
@@ -374,12 +425,16 @@ namespace
 		case SKSE::MessagingInterface::kDataLoaded:
 			g_dataLoaded = true;
 			if (g_cfg.enabled) StartPoll();
-			if (g_cfg.enabled) RE::ScriptEventSourceHolder::GetSingleton()->AddEventSink(EquipSink::Get());
+			if (g_cfg.enabled) {
+				RE::ScriptEventSourceHolder::GetSingleton()->AddEventSink(EquipSink::Get());
+				if (!g_cfg.startSpells.empty()) RE::ScriptEventSourceHolder::GetSingleton()->AddEventSink(SpellSink::Get());
+			}
 			break;
 		case SKSE::MessagingInterface::kPostLoadGame:
 		case SKSE::MessagingInterface::kNewGame:
 			// the save may be in SDT or not, whatever the previous save left in memory
 			g_applied = -1;
+			g_force = false;
 			if (g_cfg.enabled) Schedule(std::max(g_cfg.delayMs, 1500));
 			break;
 		default:
