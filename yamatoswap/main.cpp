@@ -19,6 +19,9 @@
 
 #include "Support.h"
 
+// <windows.h> turns GetObject into GetObjectA; the game headers declare the real name.
+#undef GetObject
+
 using namespace std::literals;
 
 namespace
