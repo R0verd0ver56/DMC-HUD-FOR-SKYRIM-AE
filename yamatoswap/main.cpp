@@ -67,11 +67,14 @@ namespace
 		int          redrawMs{ 450 };
 		std::vector<Entry> entries;
 		std::vector<Item>  items;
+		std::vector<Item>  startEffects;  // same idea, keyed on a magic effect being applied to the player
 		std::vector<Item>  startSpells;  // casting any of these = SDT is starting: swap early, before the armour (and its fire VFX) arrive
 	} g_cfg;
 
 	std::atomic<unsigned> g_gen{ 0 };
 	std::atomic<bool>     g_force{ false };  // SDT transform started but the armour is not on yet
+	const auto            g_t0 = std::chrono::steady_clock::now();
+	long long NowMs() { return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - g_t0).count(); }
 	int                   g_applied{ -1 };  // -1 unknown, 0 normal models, 1 SDT models (main thread only)
 	bool                  g_dataLoaded{ false };
 
@@ -156,6 +159,15 @@ namespace
 			}
 			g_cfg.startSpells.push_back({ p[0], ParseId(p[1]) });
 		}
+		for (auto& line : ini.GetAll("StartEffect")) {
+			auto p = Split(line, '|');
+			if (p.size() != 2) {
+				bono::Logf("bad StartEffect line: {}", line);
+				continue;
+			}
+			g_cfg.startEffects.push_back({ p[0], ParseId(p[1]) });
+		}
+		bono::Logf("start triggers: {} spells, {} effects", g_cfg.startSpells.size(), g_cfg.startEffects.size());
 		bono::Logf("config loaded ({}): {} swaps, {} items, delay {} ms", have ? "ini" : "no ini", g_cfg.entries.size(), g_cfg.items.size(), g_cfg.delayMs);
 	}
 
@@ -373,13 +385,40 @@ namespace
 			auto* dh = RE::TESDataHandler::GetSingleton();
 			if (!dh) return RE::BSEventNotifyControl::kContinue;
 			if (a_event->baseObject == dh->LookupFormID(g_cfg.sdtLocal, g_cfg.sdtPlugin)) {
-				bono::Logf("SDT armour {} event", a_event->equipped ? "equip" : "unequip");
+				bono::Logf("[{} ms] SDT armour {} event", NowMs(), a_event->equipped ? "equip" : "unequip");
 				g_force = false;  // from here on the worn armour decides
 				Schedule(g_cfg.delayMs);
 			}
 			return RE::BSEventNotifyControl::kContinue;
 		}
 	};
+
+	// SDT is starting: switch the look now (before the armour and its fire effect arrive).
+	void TriggerEarly(const char* a_what, RE::FormID a_local)
+	{
+		if (g_force.exchange(true)) return;  // already triggered for this transform
+		bono::Logf("[{} ms] SDT start ({} {:X}): swapping early", NowMs(), a_what, a_local);
+		Schedule(50);
+		// safety: if the armour never comes, give up and go back
+		std::thread([] {
+			std::this_thread::sleep_for(std::chrono::milliseconds(6000));
+			if (auto* t = SKSE::GetTaskInterface()) t->AddTask([] {
+				auto* pc = RE::PlayerCharacter::GetSingleton();
+				if (g_force.load() && pc && !IsSDTWorn(pc)) {
+					bono::Logf("SDT armour never arrived, undoing early swap");
+					g_force = false;
+					Evaluate();
+				}
+			});
+		}).detach();
+	}
+
+	bool FromSDTPlugin(RE::FormID a_id)
+	{
+		auto* f = RE::TESForm::LookupByID(a_id);
+		auto* file = f ? f->GetFile(0) : nullptr;
+		return file && _stricmp(std::string(file->GetFilename()).c_str(), g_cfg.sdtPlugin.c_str()) == 0;
+	}
 
 	class SpellSink : public RE::BSTEventSink<RE::TESSpellCastEvent>
 	{
@@ -395,23 +434,35 @@ namespace
 			if (!g_cfg.enabled || !a_event || !a_event->object || !a_event->object->IsPlayerRef()) return RE::BSEventNotifyControl::kContinue;
 			auto* dh = RE::TESDataHandler::GetSingleton();
 			if (!dh) return RE::BSEventNotifyControl::kContinue;
+			if (FromSDTPlugin(a_event->spell)) bono::Logf("[{} ms] cast: SDT spell {:X}", NowMs(), a_event->spell & 0xFFFFFF);
 			for (auto& sp : g_cfg.startSpells) {
 				if (a_event->spell == dh->LookupFormID(sp.local, sp.plugin)) {
-					bono::Logf("SDT start spell {:X} cast: swapping early", sp.local);
-					g_force = true;
-					Schedule(50);
-					// safety: if the armour never comes, give up and go back
-					std::thread([] {
-						std::this_thread::sleep_for(std::chrono::milliseconds(6000));
-						if (auto* t = SKSE::GetTaskInterface()) t->AddTask([] {
-							auto* pc = RE::PlayerCharacter::GetSingleton();
-							if (g_force.load() && pc && !IsSDTWorn(pc)) {
-								bono::Logf("SDT armour never arrived, undoing early swap");
-								g_force = false;
-								Evaluate();
-							}
-						});
-					}).detach();
+					TriggerEarly("spell", sp.local);
+					break;
+				}
+			}
+			return RE::BSEventNotifyControl::kContinue;
+		}
+	};
+
+	class EffectSink : public RE::BSTEventSink<RE::TESMagicEffectApplyEvent>
+	{
+	public:
+		static EffectSink* Get()
+		{
+			static EffectSink s;
+			return &s;
+		}
+
+		RE::BSEventNotifyControl ProcessEvent(const RE::TESMagicEffectApplyEvent* a_event, RE::BSTEventSource<RE::TESMagicEffectApplyEvent>*) override
+		{
+			if (!g_cfg.enabled || !a_event || !a_event->target || !a_event->target->IsPlayerRef()) return RE::BSEventNotifyControl::kContinue;
+			auto* dh = RE::TESDataHandler::GetSingleton();
+			if (!dh) return RE::BSEventNotifyControl::kContinue;
+			if (FromSDTPlugin(a_event->magicEffect)) bono::Logf("[{} ms] effect applied: SDT mgef {:X}", NowMs(), a_event->magicEffect & 0xFFFFFF);
+			for (auto& ef : g_cfg.startEffects) {
+				if (a_event->magicEffect == dh->LookupFormID(ef.local, ef.plugin)) {
+					TriggerEarly("effect", ef.local);
 					break;
 				}
 			}
@@ -427,7 +478,8 @@ namespace
 			if (g_cfg.enabled) StartPoll();
 			if (g_cfg.enabled) {
 				RE::ScriptEventSourceHolder::GetSingleton()->AddEventSink(EquipSink::Get());
-				if (!g_cfg.startSpells.empty()) RE::ScriptEventSourceHolder::GetSingleton()->AddEventSink(SpellSink::Get());
+				RE::ScriptEventSourceHolder::GetSingleton()->AddEventSink(SpellSink::Get());
+				RE::ScriptEventSourceHolder::GetSingleton()->AddEventSink(EffectSink::Get());
 			}
 			break;
 		case SKSE::MessagingInterface::kPostLoadGame:
