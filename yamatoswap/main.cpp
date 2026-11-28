@@ -62,6 +62,7 @@ namespace
 		RE::FormID   sdtLocal{ 0xD63 };
 		bool         reequip{ true };
 		int          pollMs{ 500 };
+		int          gapMs{ 250 };
 		std::vector<Entry> entries;
 		std::vector<Item>  items;
 	} g_cfg;
@@ -108,6 +109,7 @@ namespace
 		g_cfg.delayMs = std::clamp(ini.GetInt("Delay", 600), 0, 5000);
 		g_cfg.reequip = ini.GetBool("Reequip", true);
 		g_cfg.pollMs  = std::clamp(ini.GetInt("PollMs", 500), 0, 10000);
+		g_cfg.gapMs   = std::clamp(ini.GetInt("ReequipGap", 250), 0, 3000);
 		bono::Log::Get().Init(kLogPath, ini.GetBool("LogEnabled", false), ini.GetInt("MaxLogLines", 2000));
 
 		auto sdt = Split(ini.GetString("SDTArmor", "OmecaOneVergilSDT.esp|0xD63"), '|');
@@ -192,6 +194,32 @@ namespace
 		return changed;
 	}
 
+	struct Pending
+	{
+		RE::FormID id;
+		bool       weapon;
+		bool       right;
+	};
+
+	// Phase 2 (a later frame): put the items back on so the game builds their 3D from the new models.
+	void EquipPending(std::vector<Pending> a_list)
+	{
+		auto* pc = RE::PlayerCharacter::GetSingleton();
+		auto* em = RE::ActorEquipManager::GetSingleton();
+		auto* dom = RE::BGSDefaultObjectManager::GetSingleton();
+		if (!pc || !em || !dom) return;
+		auto* rightHand = dom->GetObject<RE::BGSEquipSlot>(RE::DEFAULT_OBJECT::kRightHandEquip);
+		for (auto& p : a_list) {
+			auto* obj = RE::TESForm::LookupByID<RE::TESBoundObject>(p.id);
+			if (!obj) continue;
+			const RE::BGSEquipSlot* slot = (p.weapon && p.right) ? rightHand : nullptr;
+			bono::Logf("equip again {:X}", p.id);
+			em->EquipObject(pc, obj, nullptr, 1, slot, false, true, false, true);
+		}
+	}
+
+	// Phase 1: take the changed items off now; phase 2 puts them back ReequipGap ms later (not in the same frame,
+	// otherwise the engine keeps the old 3D).
 	void ReequipItems(RE::PlayerCharacter* a_pc)
 	{
 		auto* em = RE::ActorEquipManager::GetSingleton();
@@ -200,6 +228,7 @@ namespace
 		if (!em || !dom || !dh) return;
 		auto* rightHand = dom->GetObject<RE::BGSEquipSlot>(RE::DEFAULT_OBJECT::kRightHandEquip);
 
+		std::vector<Pending> pending;
 		for (auto& it : g_cfg.items) {
 			auto* form = dh->LookupForm(it.local, it.plugin);
 			auto* obj  = form ? form->As<RE::TESBoundObject>() : nullptr;
@@ -212,16 +241,22 @@ namespace
 				const bool left  = a_pc->GetEquippedObject(true) == form;
 				if (!right && !left) continue;
 				const RE::BGSEquipSlot* slot = right ? rightHand : nullptr;
-				bono::Logf("re-equip weapon {:X} ({})", it.local, right ? "right" : "left");
+				bono::Logf("unequip weapon {:X} ({})", it.local, right ? "right" : "left");
 				em->UnequipObject(a_pc, obj, nullptr, 1, slot, false, true, false, true);
-				em->EquipObject(a_pc, obj, nullptr, 1, slot, false, true, false, true);
+				pending.push_back({ obj->GetFormID(), true, right });
 			} else if (obj->Is(RE::FormType::Armor)) {
 				if (!a_pc->GetWornArmor(obj->GetFormID())) continue;
-				bono::Logf("re-equip armour {:X}", it.local);
+				bono::Logf("unequip armour {:X}", it.local);
 				em->UnequipObject(a_pc, obj, nullptr, 1, nullptr, false, true, false, true);
-				em->EquipObject(a_pc, obj, nullptr, 1, nullptr, false, true, false, true);
+				pending.push_back({ obj->GetFormID(), false, false });
 			}
 		}
+		if (pending.empty()) return;
+		const int gap = g_cfg.gapMs;
+		std::thread([pending, gap] {
+			std::this_thread::sleep_for(std::chrono::milliseconds(gap));
+			if (auto* t = SKSE::GetTaskInterface()) t->AddTask([pending] { EquipPending(pending); });
+		}).detach();
 	}
 
 	bool IsSDTWorn(RE::PlayerCharacter* a_pc)
