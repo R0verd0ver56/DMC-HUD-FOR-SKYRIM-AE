@@ -14,18 +14,34 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Pinned CommonLibSSE-NG (supports Skyrim SE + AE incl. 1.6.1170 through the Address Library).
+      # CommonLibSSE-NG v12.1.0 - the same revision the working AMR 1.5.4.5 build uses
+      # (Address Library format 5, so the DLLs also load on Skyrim 1.7.104).
       - name: Fetch CommonLibSSE-NG
         shell: pwsh
         run: |
-          git clone https://github.com/CharmedBaryon/CommonLibSSE-NG.git extern/CommonLibSSE-NG
-          git -C extern/CommonLibSSE-NG checkout b93280e
+          git clone https://github.com/alandtse/CommonLibSSE-NG.git extern/CommonLibSSE-NG
+          if ($LASTEXITCODE -ne 0) { throw 'Clone failed' }
+          git -C extern/CommonLibSSE-NG checkout 8ffc2b74af015f837de53cc02b0cb470a15678e4
+          if ($LASTEXITCODE -ne 0) { throw 'Checkout failed' }
+
+      # Same pinned vcpkg as AMR (newer spdlog / fmt / directxtk that this CommonLibSSE-NG needs).
+      - name: Bootstrap pinned vcpkg
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP 'bono-vcpkg'
+          git clone https://github.com/microsoft/vcpkg $root
+          if ($LASTEXITCODE -ne 0) { throw 'vcpkg clone failed' }
+          git -C $root checkout 9e593bb18ea69cc5095e012465dcd675a822ed0d
+          if ($LASTEXITCODE -ne 0) { throw 'vcpkg checkout failed' }
+          & "$root/bootstrap-vcpkg.bat" -disableMetrics
+          if ($LASTEXITCODE -ne 0) { throw 'vcpkg bootstrap failed' }
+          "VCPKG_ROOT=$root" >> $env:GITHUB_ENV
 
       - name: Configure
         shell: pwsh
         run: >
           cmake -B build -S . -G "Visual Studio 17 2022" -A x64
-          -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
+          -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
           -DVCPKG_TARGET_TRIPLET=x64-windows-static
           -DBUILD_TESTS=OFF
 
