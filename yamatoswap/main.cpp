@@ -63,6 +63,8 @@ namespace
 		bool         reequip{ true };
 		int          pollMs{ 500 };
 		int          gapMs{ 250 };
+		bool         redraw{ true };
+		int          redrawMs{ 450 };
 		std::vector<Entry> entries;
 		std::vector<Item>  items;
 	} g_cfg;
@@ -110,6 +112,8 @@ namespace
 		g_cfg.reequip = ini.GetBool("Reequip", true);
 		g_cfg.pollMs  = std::clamp(ini.GetInt("PollMs", 500), 0, 10000);
 		g_cfg.gapMs   = std::clamp(ini.GetInt("ReequipGap", 250), 0, 3000);
+		g_cfg.redraw  = ini.GetBool("Redraw", true);
+		g_cfg.redrawMs = std::clamp(ini.GetInt("RedrawGap", 450), 100, 3000);
 		bono::Log::Get().Init(kLogPath, ini.GetBool("LogEnabled", false), ini.GetInt("MaxLogLines", 2000));
 
 		auto sdt = Split(ini.GetString("SDTArmor", "OmecaOneVergilSDT.esp|0xD63"), '|');
@@ -202,7 +206,7 @@ namespace
 	};
 
 	// Phase 2 (a later frame): put the items back on so the game builds their 3D from the new models.
-	void EquipPending(std::vector<Pending> a_list)
+	void EquipPending(std::vector<Pending> a_list, bool a_wasDrawn)
 	{
 		auto* pc = RE::PlayerCharacter::GetSingleton();
 		auto* em = RE::ActorEquipManager::GetSingleton();
@@ -216,6 +220,26 @@ namespace
 			bono::Logf("equip again {:X}", p.id);
 			em->EquipObject(pc, obj, nullptr, 1, slot, false, true, false, true);
 		}
+		// The sword's glow/FX are started by the draw event; a freshly built sword misses it, so sheathe and draw again.
+		if (a_wasDrawn && g_cfg.redraw) {
+			const int gap = g_cfg.redrawMs;
+			std::thread([gap] {
+				std::this_thread::sleep_for(std::chrono::milliseconds(gap));
+				if (auto* t = SKSE::GetTaskInterface()) t->AddTask([] {
+					if (auto* p = RE::PlayerCharacter::GetSingleton()) {
+						bono::Logf("redraw: sheathe");
+						p->DrawWeaponMagicHands(false);
+					}
+				});
+				std::this_thread::sleep_for(std::chrono::milliseconds(gap));
+				if (auto* t = SKSE::GetTaskInterface()) t->AddTask([] {
+					if (auto* p = RE::PlayerCharacter::GetSingleton()) {
+						bono::Logf("redraw: draw");
+						p->DrawWeaponMagicHands(true);
+					}
+				});
+			}).detach();
+		}
 	}
 
 	// Phase 1: take the changed items off now; phase 2 puts them back ReequipGap ms later (not in the same frame,
@@ -228,6 +252,7 @@ namespace
 		if (!em || !dom || !dh) return;
 		auto* rightHand = dom->GetObject<RE::BGSEquipSlot>(RE::DEFAULT_OBJECT::kRightHandEquip);
 
+		const bool wasDrawn = a_pc->AsActorState() && a_pc->AsActorState()->IsWeaponDrawn();
 		std::vector<Pending> pending;
 		for (auto& it : g_cfg.items) {
 			auto* form = dh->LookupForm(it.local, it.plugin);
@@ -253,9 +278,9 @@ namespace
 		}
 		if (pending.empty()) return;
 		const int gap = g_cfg.gapMs;
-		std::thread([pending, gap] {
+		std::thread([pending, gap, wasDrawn] {
 			std::this_thread::sleep_for(std::chrono::milliseconds(gap));
-			if (auto* t = SKSE::GetTaskInterface()) t->AddTask([pending] { EquipPending(pending); });
+			if (auto* t = SKSE::GetTaskInterface()) t->AddTask([pending, wasDrawn] { EquipPending(pending, wasDrawn); });
 		}).detach();
 	}
 
