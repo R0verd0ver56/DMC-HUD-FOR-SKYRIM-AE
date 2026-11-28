@@ -61,6 +61,7 @@ namespace
 		std::string  sdtPlugin{ "OmecaOneVergilSDT.esp" };
 		RE::FormID   sdtLocal{ 0xD63 };
 		bool         reequip{ true };
+		int          pollMs{ 500 };
 		std::vector<Entry> entries;
 		std::vector<Item>  items;
 	} g_cfg;
@@ -106,6 +107,7 @@ namespace
 		g_cfg.enabled = ini.GetBool("Enabled", true);
 		g_cfg.delayMs = std::clamp(ini.GetInt("Delay", 600), 0, 5000);
 		g_cfg.reequip = ini.GetBool("Reequip", true);
+		g_cfg.pollMs  = std::clamp(ini.GetInt("PollMs", 500), 0, 10000);
 		bono::Log::Get().Init(kLogPath, ini.GetBool("LogEnabled", false), ini.GetInt("MaxLogLines", 2000));
 
 		auto sdt = Split(ini.GetString("SDTArmor", "OmecaOneVergilSDT.esp|0xD63"), '|');
@@ -256,6 +258,33 @@ namespace
 		}).detach();
 	}
 
+
+	// Safety net: some ways of leaving SDT never send an equip/unequip event for the armour.
+	// Every PollMs, if the worn state differs from what is applied for two checks in a row, re-evaluate.
+	void StartPoll()
+	{
+		if (g_cfg.pollMs <= 0) return;
+		std::thread([] {
+			int mismatches = 0;
+			for (;;) {
+				std::this_thread::sleep_for(std::chrono::milliseconds(g_cfg.pollMs));
+				if (auto* t = SKSE::GetTaskInterface()) {
+					t->AddTask([&mismatches] {
+						auto* pc = RE::PlayerCharacter::GetSingleton();
+						if (!pc || !pc->Is3DLoaded() || !g_dataLoaded || g_applied < 0) { mismatches = 0; return; }
+						const int sdt = IsSDTWorn(pc) ? 1 : 0;
+						if (sdt == g_applied) { mismatches = 0; return; }
+						if (++mismatches >= 2) {
+							mismatches = 0;
+							bono::Logf("poll: state changed to SDT={} without an event", sdt);
+							Evaluate();
+						}
+					});
+				}
+			}
+		}).detach();
+	}
+
 	// ------------------------------------------------------------------ events
 	class EquipSink : public RE::BSTEventSink<RE::TESEquipEvent>
 	{
@@ -284,6 +313,7 @@ namespace
 		switch (a_msg->type) {
 		case SKSE::MessagingInterface::kDataLoaded:
 			g_dataLoaded = true;
+			if (g_cfg.enabled) StartPoll();
 			if (g_cfg.enabled) RE::ScriptEventSourceHolder::GetSingleton()->AddEventSink(EquipSink::Get());
 			break;
 		case SKSE::MessagingInterface::kPostLoadGame:
